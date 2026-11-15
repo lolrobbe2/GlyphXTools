@@ -37,7 +37,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Web
-        run: flutter build web --release --base-href /GlyphXTools/
+        run: flutter build web --release --base-href /GlyphXTools/ --no-tree-shake-icons
 
       - name: Upload Web Artifact
         uses: actions/upload-pages-artifact@v3
