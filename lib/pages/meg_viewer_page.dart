@@ -1,8 +1,10 @@
+import 'package:file_picker/file_picker.dart';
+import 'package:glyphxtools/files/meg/mega_file.dart';
 import 'package:glyphxtools/files/meg/mega_file_archive.dart';
 import 'package:glyphxtools/widgets/mega_directory_tree.dart';
 import 'package:glyphxtools/widgets/mega_file_explorer.dart';
+import 'package:glyphxtools/widgets/mega_file_viewer.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:file_picker/file_picker.dart';
 
 class MegViewerPage extends StatefulWidget {
   const MegViewerPage({super.key});
@@ -13,9 +15,17 @@ class MegViewerPage extends StatefulWidget {
 
 class _MegViewerPageState extends State<MegViewerPage> {
   MegaFileArchive? _archive;
-  String? _fileName;
   MegaDirectory? _directoryTree;
+
   MegaArchiveFile? _selectedFile;
+  MegaFile? _loadedFile;
+
+  String? _fileName;
+  String? _previewError;
+
+  bool _sidebarCollapsed = false;
+  bool _isLoadingFile = false;
+
   Future<void> openMegaFile() async {
     try {
       final List<PlatformFile> files = await FilePicker.pickFiles(
@@ -28,20 +38,78 @@ class _MegViewerPageState extends State<MegViewerPage> {
       }
 
       final PlatformFile file = files.single;
+
       final MegaFileArchive archive = await MegaFileArchive.fromStream(
         file.readAsByteStream(),
+        streamFactory: () => file.readAsByteStream(),
       );
-
       final MegaDirectory directoryTree = buildMegaDirectoryTree(archive);
+
+      if (!mounted) {
+        return;
+      }
 
       setState(() {
         _archive = archive;
         _directoryTree = directoryTree;
         _fileName = file.name;
+
         _selectedFile = null;
+        _loadedFile = null;
+        _previewError = null;
       });
     } catch (error) {
       _showError('Failed to open MEG file: $error');
+    }
+  }
+
+  Future<void> _selectFile(MegaArchiveFile? file) async {
+    // Folder navigation clears the current preview.
+    if (file == null) {
+      setState(() {
+        _selectedFile = null;
+        _loadedFile = null;
+        _previewError = null;
+      });
+      return;
+    }
+
+    // Avoid overlapping reads from the sequential archive reader.
+    if (_isLoadingFile || _archive == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedFile = file;
+      _loadedFile = null;
+      _previewError = null;
+      _isLoadingFile = true;
+    });
+
+    try {
+      final MegaFile loadedFile = await _archive!.readFile(file.record);
+
+      if (!mounted || !identical(_selectedFile, file)) {
+        return;
+      }
+
+      setState(() {
+        _loadedFile = loadedFile;
+      });
+    } catch (error) {
+      if (!mounted || !identical(_selectedFile, file)) {
+        return;
+      }
+
+      setState(() {
+        _previewError = 'Failed to read file: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingFile = false;
+        });
+      }
     }
   }
 
@@ -52,6 +120,52 @@ class _MegViewerPageState extends State<MegViewerPage> {
 
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Widget _buildPreview() {
+    if (_isLoadingFile) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Reading file from archive...'),
+          ],
+        ),
+      );
+    }
+
+    if (_previewError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, size: 40),
+              const SizedBox(height: 12),
+              Text(_previewError!, textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_loadedFile != null) {
+      return MegaFileViewer(file: _loadedFile!);
+    }
+
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.insert_drive_file_outlined, size: 48),
+          SizedBox(height: 12),
+          Text('Select a file to preview it.'),
+        ],
+      ),
+    );
   }
 
   @override
@@ -83,7 +197,7 @@ class _MegViewerPageState extends State<MegViewerPage> {
                 ),
               ),
               FilledButton.icon(
-                onPressed: openMegaFile,
+                onPressed: _isLoadingFile ? null : openMegaFile,
                 icon: const Icon(Icons.folder_open),
                 label: Text(hasArchive ? 'Open Another MEG' : 'Open MEG File'),
               ),
@@ -91,64 +205,67 @@ class _MegViewerPageState extends State<MegViewerPage> {
           ),
 
           const SizedBox(height: 24),
+
           Expanded(
             child: _directoryTree == null
                 ? const Center(
                     child: Text('Open a .meg archive to inspect its contents.'),
                   )
-                : Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        // Folder tree + file listing
-                        Expanded(
-                          flex: 3,
-                          child: MegaFileExplorer(
-                            root: _directoryTree!,
-                            onFileSelected: (MegaArchiveFile? file) {
+                : Column(
+                    children: [
+                      // File explorer toolbar.
+                      Row(
+                        children: [
+                          IconButton(
+                            tooltip: _sidebarCollapsed
+                                ? 'Show file sidebar'
+                                : 'Hide file sidebar',
+                            onPressed: () {
                               setState(() {
-                                _selectedFile = file;
+                                _sidebarCollapsed = !_sidebarCollapsed;
                               });
                             },
+                            icon: Icon(
+                              _sidebarCollapsed ? Icons.menu_open : Icons.menu,
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _selectedFile?.path ?? 'Archive contents',
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                        ],
+                      ),
 
-                        const VerticalDivider(width: 1),
+                      const SizedBox(height: 8),
 
-                        // File details
-                        Expanded(
-                          flex: 2,
-                          child: _selectedFile == null
-                              ? const Center(
-                                  child: Text('Select a file to inspect it.'),
-                                )
-                              : Padding(
-                                  padding: const EdgeInsets.all(24),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        _selectedFile!.name,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .headlineMedium,
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Text('Path: ${_selectedFile!.path}'),
-                                      Text(
-                                        'Size: ${_selectedFile!.record.size} bytes',
-                                      ),
-                                      Text('CRC: ${_selectedFile!.record.crc}'),
-                                      Text(
-                                        'Offset: ${_selectedFile!.record.start}',
-                                      ),
-                                    ],
-                                  ),
+                      Expanded(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            // Collapsible file sidebar.
+                            if (!_sidebarCollapsed) ...[
+                              SizedBox(
+                                width: 300,
+                                child: MegaFileExplorer(
+                                  root: _directoryTree!,
+                                  onFileSelected: (MegaArchiveFile? file) {
+                                    _selectFile(file);
+                                  },
                                 ),
+                              ),
+                              const VerticalDivider(width: 1),
+                            ],
+
+                            // File preview.
+                            Expanded(child: _buildPreview()),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
           ),
         ],

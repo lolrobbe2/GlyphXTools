@@ -8,71 +8,162 @@ import 'package:glyphxtools/files/meg/mega_file.dart';
 
 class MegaFileArchive {
   MegaFileArchive._(
-    this.reader,
+    this._reader,
+    this._streamFactory,
     this.numFilenames,
     this.numFiles,
     this.filenameRecords,
     this.fileTableRecords,
   );
 
-  static Future<MegaFileArchive> fromStream(Stream<List<int>> stream) async {
+  static Future<MegaFileArchive> fromStream(
+    Stream<List<int>> stream, {
+    required Stream<List<int>> Function() streamFactory,
+  }) async {
     final MegaBinaryReader reader = MegaBinaryReader(stream);
 
-    final int numFilenames = await reader.readUint32();
-    final int numFiles = await reader.readUint32();
-    final List<FilenameTableRecord> filenameRecords = new List.empty(
-      growable: true,
-    );
-    final List<FileTableRecord> fileTableRecords = new List.empty(
-      growable: true,
-    );
+    try {
+      final int numFilenames = await reader.readUint32();
+      final int numFiles = await reader.readUint32();
 
-    for (var i = 0; i < numFilenames; i++) {
-      filenameRecords.add(await FilenameTableRecord.fromReader(reader));
-    }
+      final List<FilenameTableRecord> filenameRecords = [];
+      final List<FileTableRecord> fileTableRecords = [];
 
-    for (var i = 0; i < numFiles; i++) {
-      fileTableRecords.add(await FileTableRecord.fromReader(reader));
+      for (int i = 0; i < numFilenames; i++) {
+        filenameRecords.add(
+          await FilenameTableRecord.fromReader(reader),
+        );
+      }
+
+      for (int i = 0; i < numFiles; i++) {
+        fileTableRecords.add(
+          await FileTableRecord.fromReader(reader),
+        );
+      }
+
+      return MegaFileArchive._(
+        reader,
+        streamFactory,
+        numFilenames,
+        numFiles,
+        filenameRecords,
+        fileTableRecords,
+      );
+    } catch (error) {
+      await reader.close();
+      rethrow;
     }
-    return MegaFileArchive._(
-      reader,
-      numFilenames,
-      numFiles,
-      filenameRecords,
-      fileTableRecords,
-    );
   }
 
-  final MegaBinaryReader reader;
+  MegaBinaryReader _reader;
 
-  //Number of filenames in the Filename Table
+  final Stream<List<int>> Function() _streamFactory;
+
+  MegaBinaryReader get reader => _reader;
+
   final int numFilenames;
-
-  //Number of files in the File Table
   final int numFiles;
 
   final List<FilenameTableRecord> filenameRecords;
   final List<FileTableRecord> fileTableRecords;
 
-  Future<MegaFile> readFile(FileTableRecord record) async {
+  Future<void> _readQueue = Future<void>.value();
+
+  bool _closing = false;
+  bool _closed = false;
+
+  /// Reads a file from the archive.
+  ///
+  /// Files can be accessed in any order. If the requested file is
+  /// behind the current reader position, the stream is reopened.
+  ///
+  /// Concurrent requests are serialized to protect the sequential reader.
+  Future<MegaFile> readFile(FileTableRecord record) {
+    if (_closing || _closed) {
+      return Future<MegaFile>.error(
+        StateError('MegaFileArchive is closed.'),
+      );
+    }
+
+    final Completer<MegaFile> completer = Completer<MegaFile>();
+
+    _readQueue = _readQueue.then((_) async {
+      try {
+        final MegaFile file = await _readFileInternal(record);
+        completer.complete(file);
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+
+    return completer.future;
+  }
+
+  Future<MegaFile> _readFileInternal(FileTableRecord record) async {
+    if (_closed) {
+      throw StateError('MegaFileArchive is closed.');
+    }
+
     if (record.name < 0 || record.name >= filenameRecords.length) {
-      throw FormatException('Invalid filename index: ${record.name}');
+      throw FormatException(
+        'Invalid filename index: ${record.name}',
+      );
+    }
+
+    if (record.start < 0 || record.size < 0) {
+      throw FormatException(
+        'Invalid file offset or size: ${record.start}, ${record.size}',
+      );
     }
 
     final String path = filenameRecords[record.name].fileName;
 
-    if (record.start < reader.position) {
-      throw StateError(
-        'Cannot read "$path": its data starts at ${record.start}, '
-        'but the reader is already at ${reader.position}. '
-        'The archive stream is sequential.',
-      );
+    // We need to restart the stream if the requested file is behind
+    // the current reader position.
+    if (record.start < _reader.position) {
+      await _restartReader();
     }
 
-    await reader.skip(record.start - reader.position);
+    // Advance to the requested file.
+    final int bytesToSkip = record.start - _reader.position;
 
-    final Uint8List data = await reader.readBytes(record.size);
+    if (bytesToSkip > 0) {
+      await _reader.skip(bytesToSkip);
+    }
 
-    return MegaFile(path: path, record: record, data: data);
+    // Read file contents.
+    final Uint8List data = await _reader.readBytes(record.size);
+
+    return MegaFile(
+      path: path,
+      record: record,
+      data: data,
+    );
+  }
+
+  /// Recreates the reader from the beginning of the MEG file.
+  Future<void> _restartReader() async {
+    final MegaBinaryReader newReader = MegaBinaryReader(
+      _streamFactory(),
+    );
+
+    await _reader.close();
+
+    _reader = newReader;
+  }
+
+  /// Closes the underlying stream.
+  Future<void> close() async {
+    if (_closing || _closed) {
+      return;
+    }
+
+    _closing = true;
+
+    await _readQueue;
+
+    _closed = true;
+
+    await _reader.close();
   }
 }

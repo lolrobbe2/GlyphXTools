@@ -73,6 +73,7 @@ class _ConvertersPageState extends State<ConvertersPage> {
     try {
       final MegaFileArchive archive = await MegaFileArchive.fromStream(
         file.readAsByteStream(),
+        streamFactory: () => file.readAsByteStream(),
       );
 
       final Uint8List result = await MegToZipConverter.convert(

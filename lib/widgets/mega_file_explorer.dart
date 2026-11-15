@@ -1,173 +1,135 @@
 
-import 'package:glyphxtools/widgets/mega_directory_tree.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:glyphxtools/widgets/mega_directory_tree.dart';
 
 class MegaFileExplorer extends StatefulWidget {
   const MegaFileExplorer({
     super.key,
     required this.root,
-    this.onFileSelected,
+    required this.onFileSelected,
   });
 
   final MegaDirectory root;
-  final ValueChanged<MegaArchiveFile?>? onFileSelected;
+  final ValueChanged<MegaArchiveFile?> onFileSelected;
 
   @override
   State<MegaFileExplorer> createState() => _MegaFileExplorerState();
 }
 
 class _MegaFileExplorerState extends State<MegaFileExplorer> {
-  final List<MegaDirectory> _directoryStack = [];
-  final Set<MegaDirectory> _expandedDirectories = {};
+  late MegaDirectory _currentDirectory;
 
-  final Map<MegaDirectory, List<MegaDirectory>> _directoryCache = {};
-  final Map<MegaDirectory, List<_ExplorerEntry>> _entryCache = {};
-
+  final List<MegaDirectory> _parents = [];
   final TextEditingController _searchController =
       TextEditingController();
 
-  String _searchQuery = '';
+  final Map<MegaDirectory, List<_ExplorerEntry>> _entryCache = {};
+
   MegaArchiveFile? _selectedFile;
 
-  MegaDirectory get _currentDirectory =>
-      _directoryStack.isEmpty ? widget.root : _directoryStack.last;
+  @override
+  void initState() {
+    super.initState();
+    _currentDirectory = widget.root;
+  }
 
   @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
+  void didUpdateWidget(covariant MegaFileExplorer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (!identical(oldWidget.root, widget.root)) {
+      _currentDirectory = widget.root;
+      _parents.clear();
+      _entryCache.clear();
+      _selectedFile = null;
+      _searchController.clear();
+    }
   }
 
-  // Sort each directory only once.
-  List<MegaDirectory> _sortedDirectories(MegaDirectory directory) {
-    return _directoryCache.putIfAbsent(directory, () {
-      final List<MegaDirectory> result =
-          directory.directories.values.toList();
-
-      result.sort(
-        (a, b) => a.name.toLowerCase().compareTo(
-              b.name.toLowerCase(),
-            ),
-      );
-
-      return result;
-    });
-  }
-
-  // Create and cache the sorted entries for each directory.
-  List<_ExplorerEntry> _entriesFor(MegaDirectory directory) {
-    return _entryCache.putIfAbsent(directory, () {
+  List<_ExplorerEntry> get _allEntries {
+    return _entryCache.putIfAbsent(_currentDirectory, () {
       final List<_ExplorerEntry> entries = [];
 
-      for (final MegaDirectory child
-          in _sortedDirectories(directory)) {
-        entries.add(_ExplorerEntry.directory(child));
+      for (final MapEntry<String, MegaDirectory> directory
+          in _currentDirectory.directories.entries) {
+        entries.add(
+          _ExplorerEntry.directory(directory.value),
+        );
       }
 
-      final List<MegaArchiveFile> files =
-          List<MegaArchiveFile>.of(directory.files);
+      for (final MegaArchiveFile file in _currentDirectory.files) {
+        entries.add(
+          _ExplorerEntry.file(file),
+        );
+      }
 
-      files.sort(
-        (a, b) => a.name.toLowerCase().compareTo(
+      entries.sort((a, b) {
+        if (a.directory != null && b.file != null) {
+          return -1;
+        }
+
+        if (a.file != null && b.directory != null) {
+          return 1;
+        }
+
+        return a.name.toLowerCase().compareTo(
               b.name.toLowerCase(),
-            ),
-      );
-
-      for (final MegaArchiveFile file in files) {
-        entries.add(_ExplorerEntry.file(file));
-      }
+            );
+      });
 
       return entries;
     });
   }
 
-  // Flatten only expanded folders for the folder tree.
-  // ListView.builder will still build only visible rows.
-  List<_FolderRow> _visibleFolderRows() {
-    final List<_FolderRow> result = [];
+  List<_ExplorerEntry> get _visibleEntries {
+    final String query =
+        _searchController.text.trim().toLowerCase();
 
-    void addChildren(
-      MegaDirectory parent,
-      List<MegaDirectory> parentPath,
-      int depth,
-    ) {
-      for (final MegaDirectory child
-          in _sortedDirectories(parent)) {
-        final List<MegaDirectory> path = [
-          ...parentPath,
-          child,
-        ];
-
-        result.add(
-          _FolderRow(
-            directory: child,
-            path: path,
-            depth: depth,
-          ),
-        );
-
-        if (_expandedDirectories.contains(child)) {
-          addChildren(child, path, depth + 1);
-        }
-      }
+    if (query.isEmpty) {
+      return _allEntries;
     }
 
-    addChildren(widget.root, [], 0);
-
-    return result;
+    return _allEntries
+        .where((entry) => entry.name.toLowerCase().contains(query))
+        .toList();
   }
 
-  void _selectFolder(List<MegaDirectory> path) {
+  String get _currentPath {
+    final List<String> parts = _parents
+        .map((directory) => directory.name)
+        .where((name) => name.isNotEmpty)
+        .toList();
+
+    if (_currentDirectory.name.isNotEmpty) {
+      parts.add(_currentDirectory.name);
+    }
+
+    return parts.isEmpty ? 'Archive' : 'Archive / ${parts.join(' / ')}';
+  }
+
+  void _goUp() {
+    if (_parents.isEmpty) {
+      return;
+    }
+
     setState(() {
-      _directoryStack
-        ..clear()
-        ..addAll(path);
-
-      _expandedDirectories.addAll(path);
-
+      _currentDirectory = _parents.removeLast();
       _selectedFile = null;
-      _clearSearch();
+      _searchController.clear();
     });
 
-    widget.onFileSelected?.call(null);
+    widget.onFileSelected(null);
   }
 
   void _openDirectory(MegaDirectory directory) {
     setState(() {
-      _directoryStack.add(directory);
-      _expandedDirectories.addAll(_directoryStack);
-
+      _parents.add(_currentDirectory);
+      _currentDirectory = directory;
       _selectedFile = null;
-      _clearSearch();
+      _searchController.clear();
     });
 
-    widget.onFileSelected?.call(null);
-  }
-
-  void _navigateToBreadcrumb(int index) {
-    setState(() {
-      if (index < 0) {
-        _directoryStack.clear();
-      } else {
-        _directoryStack.removeRange(
-          index + 1,
-          _directoryStack.length,
-        );
-      }
-
-      _selectedFile = null;
-      _clearSearch();
-    });
-
-    widget.onFileSelected?.call(null);
-  }
-
-  void _toggleDirectory(MegaDirectory directory) {
-    setState(() {
-      if (!_expandedDirectories.add(directory)) {
-        _expandedDirectories.remove(directory);
-      }
-    });
+    widget.onFileSelected(null);
   }
 
   void _selectFile(MegaArchiveFile file) {
@@ -175,415 +137,32 @@ class _MegaFileExplorerState extends State<MegaFileExplorer> {
       _selectedFile = file;
     });
 
-    widget.onFileSelected?.call(file);
-  }
-
-  void _clearSearch() {
-    _searchController.clear();
-    _searchQuery = '';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final List<_FolderRow> folderRows = _visibleFolderRows();
-
-    final List<_ExplorerEntry> allEntries =
-        _entriesFor(_currentDirectory);
-
-    final String query = _searchQuery.trim().toLowerCase();
-
-    final List<_ExplorerEntry> visibleEntries = query.isEmpty
-        ? allEntries
-        : allEntries
-            .where(
-              (entry) => entry.name.toLowerCase().contains(query),
-            )
-            .toList(growable: false);
-
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // LEFT: Folder navigation tree
-        SizedBox(
-          width: 220,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(
-                height: 44,
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'Folders',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: folderRows.length,
-                  itemExtent: 36,
-                  cacheExtent: 400,
-                  addAutomaticKeepAlives: false,
-                  itemBuilder: (context, index) {
-                    final _FolderRow row = folderRows[index];
-
-                    final bool selected =
-                        identical(_currentDirectory, row.directory);
-
-                    final bool expanded =
-                        _expandedDirectories.contains(row.directory);
-
-                    final bool hasChildren =
-                        row.directory.directories.isNotEmpty;
-
-                    final ColorScheme colors =
-                        Theme.of(context).colorScheme;
-
-                    return Padding(
-                      padding: EdgeInsets.only(
-                        left: 6 + row.depth * 14.0,
-                        right: 4,
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(4),
-                              onTap: () => _selectFolder(row.path),
-                              child: Container(
-                                height: 32,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: selected
-                                      ? colors.secondaryContainer
-                                      : null,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      expanded
-                                          ? Icons.folder_open
-                                          : Icons.folder,
-                                      size: 19,
-                                      color: colors.primary,
-                                    ),
-                                    const SizedBox(width: 7),
-                                    Expanded(
-                                      child: Text(
-                                        row.directory.name,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                          SizedBox(
-                            width: 28,
-                            height: 32,
-                            child: hasChildren
-                                ? IconButton(
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(),
-                                    tooltip: expanded
-                                        ? 'Collapse folder'
-                                        : 'Expand folder',
-                                    icon: Icon(
-                                      expanded
-                                          ? Icons.expand_more
-                                          : Icons.chevron_right,
-                                      size: 19,
-                                    ),
-                                    onPressed: () => _toggleDirectory(
-                                      row.directory,
-                                    ),
-                                  )
-                                : const SizedBox.shrink(),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        const VerticalDivider(width: 1),
-
-        // RIGHT: Current directory contents
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Toolbar and breadcrumbs
-              SizedBox(
-                height: 52,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        tooltip: 'Go back',
-                        onPressed: _directoryStack.isEmpty
-                            ? null
-                            : () => _navigateToBreadcrumb(
-                                  _directoryStack.length - 2,
-                                ),
-                        icon: const Icon(Icons.arrow_back),
-                      ),
-
-                      Expanded(
-                        child: SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(
-                            children: [
-                              TextButton(
-                                onPressed: () =>
-                                    _navigateToBreadcrumb(-1),
-                                child: const Text('Archive'),
-                              ),
-                              for (int i = 0;
-                                  i < _directoryStack.length;
-                                  i++) ...[
-                                const Icon(
-                                  Icons.chevron_right,
-                                  size: 18,
-                                ),
-                                TextButton(
-                                  onPressed: () =>
-                                      _navigateToBreadcrumb(i),
-                                  child: Text(_directoryStack[i].name),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(width: 8),
-
-                      SizedBox(
-                        width: 200,
-                        height: 36,
-                        child: TextField(
-                          controller: _searchController,
-                          onChanged: (String value) {
-                            setState(() {
-                              _searchQuery = value;
-                            });
-                          },
-                          decoration: InputDecoration(
-                            hintText: 'Search this folder',
-                            prefixIcon: const Icon(
-                              Icons.search,
-                              size: 19,
-                            ),
-                            suffixIcon: _searchQuery.isNotEmpty
-                                ? IconButton(
-                                    tooltip: 'Clear search',
-                                    icon: const Icon(
-                                      Icons.clear,
-                                      size: 18,
-                                    ),
-                                    onPressed: () {
-                                      setState(_clearSearch);
-                                    },
-                                  )
-                                : null,
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 8,
-                            ),
-                            border: const OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const Divider(height: 1),
-
-              // Column headers
-              SizedBox(
-                height: 34,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 28),
-                      const Expanded(
-                        child: Text(
-                          'Name',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                      SizedBox(
-                        width: 100,
-                        child: Text(
-                          'Size',
-                          textAlign: TextAlign.end,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const Divider(height: 1),
-
-              // Virtualized file listing
-              Expanded(
-                child: visibleEntries.isEmpty
-                    ? Center(
-                        child: Text(
-                          query.isEmpty
-                              ? 'This folder is empty.'
-                              : 'No matching files or folders.',
-                        ),
-                      )
-                    : ListView.builder(
-                        itemCount: visibleEntries.length,
-                        itemExtent: 44,
-                        cacheExtent: 500,
-                        addAutomaticKeepAlives: false,
-                        itemBuilder: (context, index) {
-                          final _ExplorerEntry entry =
-                              visibleEntries[index];
-
-                          final bool isDirectory =
-                              entry.directory != null;
-
-                          final MegaArchiveFile? file = entry.file;
-
-                          final bool selected = file != null &&
-                              identical(_selectedFile, file);
-
-                          final ColorScheme colors =
-                              Theme.of(context).colorScheme;
-
-                          return InkWell(
-                            key: ValueKey(
-                              entry.directory ?? entry.file,
-                            ),
-                            onTap: isDirectory
-                                ? () => _openDirectory(entry.directory!)
-                                : () => _selectFile(file!),
-                            child: Container(
-                              color: selected
-                                  ? colors.secondaryContainer
-                                  : null,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                              ),
-                              child: Row(
-                                children: [
-                                  SizedBox(
-                                    width: 28,
-                                    child: Icon(
-                                      isDirectory
-                                          ? Icons.folder
-                                          : _fileIcon(file!.name),
-                                      size: 20,
-                                      color: isDirectory
-                                          ? colors.primary
-                                          : colors.onSurfaceVariant,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      entry.name,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  SizedBox(
-                                    width: 100,
-                                    child: Text(
-                                      isDirectory
-                                          ? ''
-                                          : _formatSize(file!.record.size),
-                                      textAlign: TextAlign.end,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-
-              const Divider(height: 1),
-
-              // Status bar
-              SizedBox(
-                height: 28,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '${visibleEntries.length} items',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
+    widget.onFileSelected(file);
   }
 
   IconData _fileIcon(String name) {
     final String extension = name.contains('.')
-        ? name.split('.').last.toLowerCase()
+        ? name.substring(name.lastIndexOf('.')).toLowerCase()
         : '';
 
     switch (extension) {
-      case 'dds':
-      case 'tga':
-      case 'png':
-      case 'jpg':
-      case 'jpeg':
-      case 'bmp':
+      case '.dds':
+      case '.png':
+      case '.jpg':
+      case '.jpeg':
+      case '.bmp':
         return Icons.image_outlined;
 
-      case 'txt':
-      case 'xml':
-      case 'ini':
-      case 'cfg':
-      case 'lua':
+      case '.txt':
+      case '.ini':
+      case '.cfg':
+      case '.xml':
+      case '.json':
         return Icons.description_outlined;
 
-      case 'wav':
-      case 'mp3':
+      case '.wav':
+      case '.mp3':
+      case '.ogg':
         return Icons.audio_file_outlined;
 
       default:
@@ -591,38 +170,140 @@ class _MegaFileExplorerState extends State<MegaFileExplorer> {
     }
   }
 
-  String _formatSize(int bytes) {
-    if (bytes < 1024) {
-      return '$bytes B';
-    }
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
-    if (bytes < 1024 * 1024) {
-      return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    }
+  @override
+  Widget build(BuildContext context) {
+    final List<_ExplorerEntry> entries = _visibleEntries;
 
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Go up',
+                onPressed: _parents.isEmpty ? null : _goUp,
+                icon: const Icon(Icons.arrow_upward),
+              ),
+              Expanded(
+                child: Text(
+                  _currentPath,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 8,
+          ),
+          child: TextField(
+            controller: _searchController,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              hintText: 'Search this folder...',
+              prefixIcon: const Icon(Icons.search),
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              suffixIcon: _searchController.text.isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: 'Clear search',
+                      icon: const Icon(Icons.close),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() {});
+                      },
+                    ),
+            ),
+          ),
+        ),
+
+        const Divider(height: 1),
+
+        Expanded(
+          child: entries.isEmpty
+              ? Center(
+                  child: Text(
+                    _searchController.text.isEmpty
+                        ? 'This folder is empty.'
+                        : 'No matching files.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: entries.length,
+                  itemExtent: 42,
+                  scrollCacheExtent: ScrollCacheExtent.pixels(400),
+                  itemBuilder: (context, index) {
+                    final _ExplorerEntry entry = entries[index];
+                    final bool isDirectory =
+                        entry.directory != null;
+                    final bool isSelected =
+                        identical(_selectedFile, entry.file);
+
+                    return ListTile(
+                      dense: true,
+                      visualDensity: VisualDensity.compact,
+                      selected: isSelected,
+                      leading: Icon(
+                        isDirectory
+                            ? Icons.folder_outlined
+                            : _fileIcon(entry.name),
+                        size: 20,
+                      ),
+                      title: Text(
+                        entry.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: isDirectory
+                          ? const Icon(
+                              Icons.chevron_right,
+                              size: 18,
+                            )
+                          : null,
+                      onTap: () {
+                        if (entry.directory != null) {
+                          _openDirectory(entry.directory!);
+                        } else if (entry.file != null) {
+                          _selectFile(entry.file!);
+                        }
+                      },
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
   }
 }
 
 class _ExplorerEntry {
-  const _ExplorerEntry.directory(this.directory) : file = null;
+   _ExplorerEntry.directory(MegaDirectory value)
+      : directory = value,
+        file = null,
+        name = value.name;
 
-  const _ExplorerEntry.file(this.file) : directory = null;
+   _ExplorerEntry.file(MegaArchiveFile value)
+      : directory = null,
+        file = value,
+        name = value.name;
 
+  final String name;
   final MegaDirectory? directory;
   final MegaArchiveFile? file;
-
-  String get name => directory?.name ?? file!.name;
-}
-
-class _FolderRow {
-  const _FolderRow({
-    required this.directory,
-    required this.path,
-    required this.depth,
-  });
-
-  final MegaDirectory directory;
-  final List<MegaDirectory> path;
-  final int depth;
 }
