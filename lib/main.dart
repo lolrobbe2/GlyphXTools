@@ -1,3 +1,4 @@
+import 'package:glyphxtools/pages/converters_page.dart';
 import 'package:glyphxtools/pages/meg_viewer_page.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -70,6 +71,12 @@ class _MainPageState extends State<MainPage> {
       icon: Icons.archive_outlined,
       selectedIcon: Icons.archive,
       page: const MegViewerPage(),
+    ),
+    AppPage(
+      title: 'Converters',
+      icon: Icons.transform,
+      selectedIcon: Icons.transform,
+      page: const ConvertersPage(),
     ),
   ];
 
