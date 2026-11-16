@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import 'package:glyphxtools/files/meg/mega_file.dart';
 import 'package:glyphxtools/widgets/mega_dds_viewer.dart';
+import 'package:glyphxtools/widgets/mega_xml_viewer.dart';
 
 class MegaFileViewer extends StatelessWidget {
   const MegaFileViewer({
@@ -33,6 +34,12 @@ class MegaFileViewer extends StatelessWidget {
     switch (_extension) {
       case '.dds':
         return MegaDdsViewer(
+          file: file,
+          backgroundColor: backgroundColor,
+          showInfo: showInfo,
+        );
+      case '.xml':
+        return MegaXmlViewer(
           file: file,
           backgroundColor: backgroundColor,
           showInfo: showInfo,
