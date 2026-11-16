@@ -2,6 +2,8 @@ import 'package:flutter/widgets.dart';
 
 import 'package:glyphxtools/files/meg/mega_file.dart';
 import 'package:glyphxtools/widgets/mega_dds_viewer.dart';
+import 'package:glyphxtools/widgets/mega_h_viewer.dart';
+import 'package:glyphxtools/widgets/mega_rc_viewer.dart';
 import 'package:glyphxtools/widgets/mega_xml_viewer.dart';
 
 class MegaFileViewer extends StatelessWidget {
@@ -43,6 +45,17 @@ class MegaFileViewer extends StatelessWidget {
           file: file,
           backgroundColor: backgroundColor,
           showInfo: showInfo,
+        );
+      case '.rc':
+        return MegaRcViewer(
+          file: file,
+          backgroundColor: backgroundColor,
+          showInfo: showInfo,
+        );
+      case '.h':
+        return MegaHViewer(
+          file: file,
+          showInfo: true,
         );
       default:
         return _buildUnsupportedViewer();
